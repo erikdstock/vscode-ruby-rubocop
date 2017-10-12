@@ -24,6 +24,9 @@ export default class Rubocop {
     private additionalArguments: string[];
     private configPath: string;
     private onSave: boolean;
+    private executeRubocop: (args: string[],
+                             opts: cp.ExecFileOptions,
+                             cb: (err: Error, stdout: string, stderr: string) => void) => cp.ChildProcess;
     private useBundler: boolean;
     private taskQueue: TaskQueue = new TaskQueue();
 
@@ -46,15 +49,15 @@ export default class Rubocop {
 
         this.resetConfig();
 
+        // todo: deal with this
         if (!this.useBundler && (!this.path || 0 === this.path.length)) {
-            vscode.window.showWarningMessage('execute path is empty! please check ruby.rubocop.executePath/useBundler config');
+            vscode.window.showWarningMessage('execute path is empty! please check ruby.rubocop.executePath/useBundler config and maybe clean up this error');
             return;
         }
 
         const fileName = document.fileName;
         const uri = document.uri;
         let currentPath = vscode.workspace.rootPath;
-        console.log(currentPath);
         if (!currentPath) {
             currentPath = path.dirname(fileName);
         }
@@ -90,20 +93,10 @@ export default class Rubocop {
             this.diag.set(entries);
         };
 
-        let executeRubocop: (opts: cp.ExecFileOptions, cb: (err: Error, stdout: string, stderr: string) => void) => cp.ChildProcess;
         const args = this.commandArguments(fileName);
-        if (this.useBundler) {
-            const cmd = ['bundle', 'exec', this.command].concat(args).join(' ');
-            console.log(cmd);
-            console.log('********');
-            executeRubocop = (options, callback) => cp.exec(cmd, options, callback);
-        } else {
-            const executeFile = this.path + this.command;
-            executeRubocop = (options, callback) => cp.execFile(executeFile, args, options, callback);
-        }
 
         let task = new Task(uri, token => {
-            let process = executeRubocop({ cwd: currentPath }, (error, stdout, stderr) => {
+            let process = this.executeRubocop(args, { cwd: currentPath }, (error, stdout, stderr) => {
                 if (token.isCanceled) {
                     return;
                 }
@@ -176,6 +169,7 @@ export default class Rubocop {
     private hasError(error: Error, stderr: string): boolean {
         let errorOutput = stderr.toString();
         if (error && (<any>error).code === 'ENOENT') {
+            // todo: handle this error if using bundler
             vscode.window.showWarningMessage(`${this.path} + ${this.command} is not executable`);
             return true;
         } else if (error && (<any>error).code === 127) {
@@ -183,7 +177,7 @@ export default class Rubocop {
             console.log(error.message);
             return true;
         } else if (errorOutput.length > 0) {
-            vscode.window.showErrorMessage('UHHHHHHHHHHHH' + stderr);
+            vscode.window.showErrorMessage(stderr);
             console.log(this.path + this.command);
             console.log(errorOutput);
             return true;
@@ -201,12 +195,22 @@ export default class Rubocop {
      */
     private resetConfig(): void {
         const conf = vscode.workspace.getConfiguration('ruby.rubocop');
-        this.path = conf.get('executePath', '');
-        this.useBundler = conf.useBundler;
-        // try to autodetect the path (if it's not specified explicitly)
-        if (!this.path || 0 === this.path.length) {
-            this.path = this.autodetectExecutePath();
+
+        if (conf.useBundler) {
+            const cmd = ['bundle', 'exec', this.command];
+            console.log(cmd);
+            console.log('Using bundler');
+            this.executeRubocop = (args, options, callback) => cp.exec(cmd.concat(args).join(' '), options, callback);
+        } else {
+            let path = conf.get('executePath', '');
+            // try to autodetect the path (if it's not specified explicitly)
+            if (path.length === 0) {
+                path = this.autodetectExecutePath();
+            }
+            const executeFile = path + this.command;
+            this.executeRubocop = (args, options, callback) => cp.execFile(executeFile, args, options, callback);
         }
+
         this.configPath = conf.get('configFilePath', '');
         this.onSave = conf.get('onSave', true);
     }
