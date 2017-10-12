@@ -62,6 +62,11 @@
           "default": "",
           "description": "execution path of rubocop."
         },
+        "ruby.rubocop.useBundler": {
+          "type": "boolean",
+          "default": false,
+          "description": "use `bundle exec rubocop` (rather than executePath)"
+        },
         "ruby.rubocop.configFilePath": {
           "type": "string",
           "default": "",

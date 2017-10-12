@@ -5,10 +5,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 
+// this is never explicitly used anywhere- maybe implicitly used by vscode?
 interface RubocopConfig {
     executePath: string;
     configFilePath: string;
     options: string[];
+    useBundler: boolean;
 }
 
 function isFileUri(uri: vscode.Uri): boolean {
@@ -22,6 +24,7 @@ export default class Rubocop {
     private additionalArguments: string[];
     private configPath: string;
     private onSave: boolean;
+    private useBundler: boolean;
     private taskQueue: TaskQueue = new TaskQueue();
 
     constructor(
@@ -43,14 +46,15 @@ export default class Rubocop {
 
         this.resetConfig();
 
-        if (!this.path || 0 === this.path.length) {
-            vscode.window.showWarningMessage('execute path is empty! please check ruby.rubocop.executePath config');
+        if (!this.useBundler && (!this.path || 0 === this.path.length)) {
+            vscode.window.showWarningMessage('execute path is empty! please check ruby.rubocop.executePath/useBundler config');
             return;
         }
 
         const fileName = document.fileName;
         const uri = document.uri;
         let currentPath = vscode.workspace.rootPath;
+        console.log(currentPath);
         if (!currentPath) {
             currentPath = path.dirname(fileName);
         }
@@ -86,11 +90,20 @@ export default class Rubocop {
             this.diag.set(entries);
         };
 
-        const executeFile = this.path + this.command;
-        let args = this.commandArguments(fileName);
+        let executeRubocop: (opts: cp.ExecFileOptions, cb: (err: Error, stdout: string, stderr: string) => void) => cp.ChildProcess;
+        const args = this.commandArguments(fileName);
+        if (this.useBundler) {
+            const cmd = ['bundle', 'exec', this.command].concat(args).join(' ');
+            console.log(cmd);
+            console.log('********');
+            executeRubocop = (options, callback) => cp.exec(cmd, options, callback);
+        } else {
+            const executeFile = this.path + this.command;
+            executeRubocop = (options, callback) => cp.execFile(executeFile, args, options, callback);
+        }
 
         let task = new Task(uri, token => {
-            let process = cp.execFile(executeFile, args, { cwd: currentPath }, (error: Error, stdout: string, stderr: string) => {
+            let process = executeRubocop({ cwd: currentPath }, (error, stdout, stderr) => {
                 if (token.isCanceled) {
                     return;
                 }
@@ -170,7 +183,7 @@ export default class Rubocop {
             console.log(error.message);
             return true;
         } else if (errorOutput.length > 0) {
-            vscode.window.showErrorMessage(stderr);
+            vscode.window.showErrorMessage('UHHHHHHHHHHHH' + stderr);
             console.log(this.path + this.command);
             console.log(errorOutput);
             return true;
@@ -189,12 +202,11 @@ export default class Rubocop {
     private resetConfig(): void {
         const conf = vscode.workspace.getConfiguration('ruby.rubocop');
         this.path = conf.get('executePath', '');
-
+        this.useBundler = conf.useBundler;
         // try to autodetect the path (if it's not specified explicitly)
         if (!this.path || 0 === this.path.length) {
             this.path = this.autodetectExecutePath();
         }
-
         this.configPath = conf.get('configFilePath', '');
         this.onSave = conf.get('onSave', true);
     }
