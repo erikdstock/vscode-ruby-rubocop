@@ -4,54 +4,33 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-
-// this is never explicitly used anywhere- maybe implicitly used by vscode?
-interface RubocopConfig {
-    executePath: string;
-    configFilePath: string;
-    options: string[];
-    useBundler: boolean;
-}
+import { getConfig, RubocopConfig } from './configuration';
 
 function isFileUri(uri: vscode.Uri): boolean {
     return uri.scheme === 'file';
 }
 
 export default class Rubocop {
+    public config: RubocopConfig;
     private diag: vscode.DiagnosticCollection;
-    private path: string;
-    private command: string;
     private additionalArguments: string[];
-    private configPath: string;
-    private onSave: boolean;
     private executeRubocop: (args: string[],
                              opts: cp.ExecFileOptions,
                              cb: (err: Error, stdout: string, stderr: string) => void) => cp.ChildProcess;
-    private useBundler: boolean;
     private taskQueue: TaskQueue = new TaskQueue();
 
     constructor(
         diagnostics: vscode.DiagnosticCollection,
         additionalArguments: string[] = [],
-        platform: NodeJS.Platform = process.platform,
     ) {
         this.diag = diagnostics;
-        this.command = (platform === 'win32') ? 'rubocop.bat' : 'rubocop';
         this.additionalArguments = additionalArguments;
-        this.resetConfig();
+        this.config = getConfig();
     }
 
     public execute(document: vscode.TextDocument, onComplete?: () => void): void {
         if (document.languageId !== 'ruby' || document.isUntitled || !isFileUri(document.uri)) {
             // git diff has ruby-mode. but it is Untitled file.
-            return;
-        }
-
-        this.resetConfig();
-
-        // todo: deal with this
-        if (!this.useBundler && (!this.path || 0 === this.path.length)) {
-            vscode.window.showWarningMessage('execute path is empty! please check ruby.rubocop.executePath/useBundler config and maybe clean up this error');
             return;
         }
 
@@ -96,7 +75,7 @@ export default class Rubocop {
         const args = this.commandArguments(fileName);
 
         let task = new Task(uri, token => {
-            let process = this.executeRubocop(args, { cwd: currentPath }, (error, stdout, stderr) => {
+            let process = this.config.executeRubocop(args, { cwd: currentPath }, (error, stdout, stderr) => {
                 if (token.isCanceled) {
                     return;
                 }
@@ -112,7 +91,7 @@ export default class Rubocop {
     }
 
     public get isOnSave(): boolean {
-        return this.onSave;
+        return this.config.onSave;
     }
 
     public clear(document: vscode.TextDocument): void {
@@ -127,12 +106,12 @@ export default class Rubocop {
     protected commandArguments(fileName: string): string[] {
         let commandArguments = [fileName, '--format', 'json', '--force-exclusion'];
 
-        if (this.configPath !== '') {
-            if (fs.existsSync(this.configPath)) {
-                const config = ['--config', this.configPath];
+        if (this.config.configFilePath !== '') {
+            if (fs.existsSync(this.config.configFilePath)) {
+                const config = ['--config', this.config.configFilePath];
                 commandArguments = commandArguments.concat(config);
             } else {
-                vscode.window.showWarningMessage(`${this.configPath} file does not exist. Ignoring...`);
+                vscode.window.showWarningMessage(`${this.config.configFilePath} file does not exist. Ignoring...`);
             }
         }
 
@@ -143,7 +122,7 @@ export default class Rubocop {
     private parse(output: string): RubocopOutput | null {
         let rubocop: RubocopOutput;
         if (output.length < 1) {
-            let message = `command ${this.path}${this.command} returns empty output! please check configuration.`;
+            let message = `command ${this.config.command} returns empty output! please check configuration.`;
             vscode.window.showWarningMessage(message);
 
             return null;
@@ -169,50 +148,17 @@ export default class Rubocop {
     private hasError(error: Error, stderr: string): boolean {
         let errorOutput = stderr.toString();
         if (error && (<any>error).code === 'ENOENT') {
-            // todo: handle this error if using bundler
-            vscode.window.showWarningMessage(`${this.path} + ${this.command} is not executable`);
+            vscode.window.showWarningMessage(`${this.config.command} is not executable`);
             return true;
         } else if (error && (<any>error).code === 127) {
             vscode.window.showWarningMessage(stderr);
-            console.log(error.message);
             return true;
         } else if (errorOutput.length > 0) {
             vscode.window.showErrorMessage(stderr);
-            console.log(this.path + this.command);
-            console.log(errorOutput);
             return true;
         }
 
         return false;
-    }
-
-    /**
-     * Read the workspace configuration for 'ruby.rubocop' and set the
-     * `path`, `configPath`, and `onSave` properties.
-     *
-     * @todo Refactor Rubocop to use vscode.workspace.onDidChangeConfiguration
-     *   rather than running Rubocop.resetConfig every time the Rubocop binary is executed
-     */
-    private resetConfig(): void {
-        const conf = vscode.workspace.getConfiguration('ruby.rubocop');
-
-        if (conf.useBundler) {
-            const cmd = ['bundle', 'exec', this.command];
-            console.log(cmd);
-            console.log('Using bundler');
-            this.executeRubocop = (args, options, callback) => cp.exec(cmd.concat(args).join(' '), options, callback);
-        } else {
-            let path = conf.get('executePath', '');
-            // try to autodetect the path (if it's not specified explicitly)
-            if (path.length === 0) {
-                path = this.autodetectExecutePath();
-            }
-            const executeFile = path + this.command;
-            this.executeRubocop = (args, options, callback) => cp.execFile(executeFile, args, options, callback);
-        }
-
-        this.configPath = conf.get('configFilePath', '');
-        this.onSave = conf.get('onSave', true);
     }
 
     private severity(sev: string): vscode.DiagnosticSeverity {
@@ -226,21 +172,4 @@ export default class Rubocop {
         }
     }
 
-    private autodetectExecutePath(): string {
-        const key: string = 'PATH';
-        let paths = process.env[key];
-        if (!paths) {
-            return '';
-        }
-
-        let pathparts = paths.split(path.delimiter);
-        for (let i = 0; i < pathparts.length; i++) {
-            let binpath = path.join(pathparts[i], this.command);
-            if (fs.existsSync(binpath)) {
-                return pathparts[i] + path.sep;
-            }
-        }
-
-        return '';
-    }
 }
