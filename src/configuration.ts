@@ -21,9 +21,7 @@ export const onDidChangeConfiguration: (rubocop: Rubocop) => () => void  = (rubo
 
 /**
  * Read the workspace configuration for 'ruby.rubocop' and return a RubocopConfig.
- *
- * @todo Refactor Rubocop to use vscode.workspace.onDidChangeConfiguration
- *   rather than running Rubocop.resetConfig every time the Rubocop binary is executed
+ * @return {RubocopConfig} config object
  */
 export const getConfig: () => RubocopConfig = () => {
   const cmd = (process.platform === 'win32') ? 'rubocop.bat' : 'rubocop';
