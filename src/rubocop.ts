@@ -14,9 +14,6 @@ export default class Rubocop {
     public config: RubocopConfig;
     private diag: vscode.DiagnosticCollection;
     private additionalArguments: string[];
-    private executeRubocop: (args: string[],
-                             opts: cp.ExecFileOptions,
-                             cb: (err: Error, stdout: string, stderr: string) => void) => cp.ChildProcess;
     private taskQueue: TaskQueue = new TaskQueue();
 
     constructor(
@@ -75,7 +72,7 @@ export default class Rubocop {
         const args = this.commandArguments(fileName);
 
         let task = new Task(uri, token => {
-            let process = this.config.executeRubocop(args, { cwd: currentPath }, (error, stdout, stderr) => {
+            let process = this.executeRubocop(args, { cwd: currentPath }, (error, stdout, stderr) => {
                 if (token.isCanceled) {
                     return;
                 }
@@ -116,6 +113,18 @@ export default class Rubocop {
         }
 
         return commandArguments.concat(this.additionalArguments);
+    }
+
+    // execute rubocop
+    private executeRubocop(
+        args: string[],
+        options: cp.ExecFileOptions,
+        cb: (err: Error, stdout: string, stderr: string) => void): cp.ChildProcess {
+        if (this.config.useBundler) {
+            return cp.exec(`${this.config.command} ${args.join(' ')}`, options, cb);
+        } else {
+            return cp.execFile(this.config.command, args, options, cb);
+        }
     }
 
     // parse rubocop(JSON) output
